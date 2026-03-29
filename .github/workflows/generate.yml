@@ -1,0 +1,67 @@
+name: Generate and Release Tokyo PMTiles
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pmtiles CLI
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/protomaps/go-pmtiles/releases/latest \
+            | grep "browser_download_url" \
+            | grep "Linux_x86_64" \
+            | grep "tar.gz" \
+            | cut -d '"' -f 4)
+          curl -L "$LATEST" -o pmtiles.tar.gz
+          tar -xzf pmtiles.tar.gz
+          chmod +x pmtiles
+          sudo mv pmtiles /usr/local/bin/
+          pmtiles version
+
+      - name: Get latest Protomaps build URL
+        id: build_url
+        run: |
+          for i in 0 1 2 3 4 5 6; do
+            DATE=$(date -d "-${i} days" +%Y%m%d)
+            URL="https://build.protomaps.com/${DATE}.pmtiles"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --head "$URL")
+            if [ "$STATUS" = "200" ]; then
+              echo "date=$DATE" >> $GITHUB_OUTPUT
+              echo "url=$URL" >> $GITHUB_OUTPUT
+              echo "Found: $URL"
+              break
+            fi
+          done
+
+      - name: Extract Tokyo PMTiles
+        run: |
+          pmtiles extract \
+            ${{ steps.build_url.outputs.url }} \
+            tokyo.pmtiles \
+            --bbox=138.9,35.5,139.95,35.9 \
+            --maxzoom=14
+          ls -lh tokyo.pmtiles
+
+      - name: Delete existing release if exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete v1.0.0 --yes || true
+          git push --delete origin v1.0.0 || true
+
+      - name: Create Release and upload PMTiles
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create v1.0.0 tokyo.pmtiles \
+            --title "v1.0.0" \
+            --notes "Protomaps build: ${{ steps.build_url.outputs.date }}"
